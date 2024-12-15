@@ -13,8 +13,6 @@
 ros::Publisher pub;
 pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_in(new pcl::PointCloud<pcl::PointXYZ>);
 pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_out(new pcl::PointCloud<pcl::PointXYZ>);
-pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_icp(new pcl::PointCloud<pcl::PointXYZ>);
-pcl::PointCloud<pcl::PointNormal>::Ptr cloud_with_normals(new pcl::PointCloud<pcl::PointNormal>);
 pcl::PointCloud<pcl::PointNormal>::Ptr cloud_out_with_normals(new pcl::PointCloud<pcl::PointNormal>);
 pcl::PointCloud<pcl::PointNormal>::Ptr cloud_icp_with_normals(new pcl::PointCloud<pcl::PointNormal>);
 pcl::VoxelGrid<pcl::PointXYZ> grid;
@@ -57,7 +55,7 @@ void cloud_callback(const sensor_msgs::PointCloud2ConstPtr& msg) {
     std::cout << "Estimated " << cloud_normals->size() << " normals." << std::endl;
 
     // ICP
-    cloud_with_normals.reset(new pcl::PointCloud<pcl::PointNormal>);
+    pcl::PointCloud<pcl::PointNormal>::Ptr cloud_with_normals(new pcl::PointCloud<pcl::PointNormal>);
     pcl::concatenateFields(*cloud_pass, *cloud_normals, *cloud_with_normals);
     cloud_icp_with_normals.reset(new pcl::PointCloud<pcl::PointNormal>);
     icp.setInputSource(cloud_with_normals);
@@ -70,10 +68,11 @@ void cloud_callback(const sensor_msgs::PointCloud2ConstPtr& msg) {
     std::cout << "Has converged:" << icp.hasConverged() << " score: " << icp.getFitnessScore() << std::endl;
 
     // Publish ICP result
-    pcl::toROSMsg(*cloud_icp_with_normals, cloud_out->header, *cloud_out);
-    cloud_out->header.frame_id = msg->header.frame_id;
-    cloud_out->header.stamp = msg->header.stamp;
-    pub.publish(cloud_out);
+    sensor_msgs::PointCloud2 output;
+    pcl::toROSMsg(*cloud_icp_with_normals, output);
+    output.header.frame_id = msg->header.frame_id;
+    output.header.stamp = msg->header.stamp;
+    pub.publish(output);
 
     // Visualize
     viewer.showCloud(cloud_icp_with_normals);
@@ -83,16 +82,33 @@ int main(int argc, char** argv) {
     ros::init(argc, argv, "cloud_matching");
     ros::NodeHandle nh;
 
-    // 读取PCD文件
-    std::string pcd_file_path = "/path/to/your/file.pcd"; // 替换为目标PCD文件路径
+    // 读取PCD文件，路径以参数的launch文件中设置
+    std::string pcd_file_path;
+    if (!nh.getParam("pcd_file_path", pcd_file_path)) {
+        PCL_ERROR("pcd_file_path not set\n");
+        return -1;
+    }
+
+    // 读取目标点云
     if (pcl::io::loadPCDFile<pcl::PointXYZ>(pcd_file_path, *target_cloud) == -1) {
         PCL_ERROR("Couldn't read file\n");
         return -1;
     }
 
-    // 将目标点云转为带法向量的点云以进行ICP
-    pcl::copyPointCloud(*target_cloud, *cloud_out);
-    // 这里可以添加法向量计算，如有需要
+    // 计算目标点云的法向量
+    pcl::PointCloud<pcl::Normal>::Ptr cloud_normals_out(new pcl::PointCloud<pcl::Normal>);
+    pcl::NormalEstimationOMP<pcl::PointXYZ, pcl::Normal> ne_out;
+    ne_out.setInputCloud(target_cloud);
+    ne_out.setKSearch(50);
+    ne_out.compute(*cloud_normals_out);
+    
+    // 将目标点云与法向量结合
+    pcl::PointCloud<pcl::PointNormal>::Ptr cloud_out_with_normals_out(new pcl::PointCloud<pcl::PointNormal>);
+    pcl::concatenateFields(*target_cloud, *cloud_normals_out, *cloud_out_with_normals_out);
+    cloud_out_with_normals = cloud_out_with_normals_out;
+
+    // 显示目标点云
+    viewer.showCloud(cloud_out_with_normals);   
 
     // 订阅和发布
     ros::Subscriber sub = nh.subscribe("/camera/depth_registered/points", 1, cloud_callback);
